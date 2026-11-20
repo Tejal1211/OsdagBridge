@@ -22,6 +22,7 @@ from osdagbridge.core.bridge_types.plate_girder.plot_generator import (
     build_figure_bmd,
     build_figure_deflection,
     build_figure_grillage,
+    build_figure_transverse,
     _add_node_number_labels,
     _add_element_number_labels,
     FORCE_MAP,
@@ -538,7 +539,12 @@ class MplPlotWidget(QWidget):
 
         # (Your existing if/elif/else block to build the new figures)
         eng_scale = self._eng_scale
-        if force_key in _SFD_KEYS:
+        if sel_girder == "Transverse Members":
+            self._fig, self._summary_data = build_figure_transverse(
+                ds, force_key, self._nodes, self._members,
+                edge_dist=self._edge_dist, eng_scale=eng_scale,
+            )
+        elif force_key in _SFD_KEYS:
             self._fig, self._summary_data = build_figure_sfd(
                 ds, force_key, self._nodes, self._members,
                 edge_dist=self._edge_dist, eng_scale=eng_scale,

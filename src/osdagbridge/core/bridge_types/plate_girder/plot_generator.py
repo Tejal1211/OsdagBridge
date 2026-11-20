@@ -1679,3 +1679,221 @@ def capture_report_figures(ds_all, nodes, members, edge_dist=0.0, eng_scale=1.0)
 
     _log.info("capture_report_figures: %d plot(s) captured", len(data))
     return data
+
+
+# =============================================================================
+# TRANSVERSE MEMBER PLOTTING  (Task III)
+# =============================================================================
+
+def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_scale=1.0):
+    """Plot force/displacement diagram for transverse bridge members.
+
+    Transverse members are those whose end-nodes differ primarily in the
+    Z (lateral) direction — i.e. end-diaphragms and intermediate cross-bracings.
+
+    Returns:
+        (fig, summary_data)  — same contract as build_figure_sfd / build_figure_bmd.
+    """
+    # -----------------------------------------------------------------
+    # 1. Classify members: transverse = lateral (Z) difference > span (X) diff
+    # -----------------------------------------------------------------
+    _z_tol = 1e-3
+
+    trans_tags = {}   # tag -> (n1, n2)
+    for tag, (n1, n2) in members.items():
+        if n1 not in nodes or n2 not in nodes:
+            continue
+        x1, _, z1 = nodes[n1]
+        x2, _, z2 = nodes[n2]
+        dx = abs(x1 - x2)
+        dz = abs(z1 - z2)
+        if dz > dx:          # lateral span dominates → transverse
+            trans_tags[int(tag)] = (n1, n2)
+
+    # -----------------------------------------------------------------
+    # 2. Create figure with 3-D axes
+    # -----------------------------------------------------------------
+    fig = Figure(figsize=(14, 6), dpi=110, facecolor="white")
+    ax = fig.add_subplot(111, projection="3d", facecolor="white")
+
+    all_xs = [c[0] for c in nodes.values()]
+    all_zs = [c[2] for c in nodes.values()]
+    x_min, x_max = min(all_xs), max(all_xs)
+    z_min, z_max = min(all_zs), max(all_zs)
+    x_range = (x_max - x_min) or 1.0
+    z_range = (z_max - z_min) or 1.0
+
+    ax.set_xlim(x_min, x_max)
+    ax.set_ylim(z_min, z_max)
+    ax.set_box_aspect([x_range, z_range, x_range * 0.30])
+
+    _add_grillage_background(
+        ax, nodes, members,
+        show_transverse=True,
+        include_end_transverse=True,
+    )
+
+    if not trans_tags:
+        ax.set_title(
+            "Transverse Members — No transverse elements found",
+            fontsize=12, fontweight="bold",
+        )
+        ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
+        ax.xaxis.pane.fill = False
+        ax.yaxis.pane.fill = False
+        ax.zaxis.pane.fill = False
+        return fig, {}
+
+    # -----------------------------------------------------------------
+    # 3. Resolve force/displacement component indices
+    # -----------------------------------------------------------------
+    v_scale = _value_plot_scale(eng_scale)
+    is_disp = force_key in DISP_MAP
+    summary_data = {}
+    all_vals = []
+
+    if not is_disp and force_key not in FORCE_MAP:
+        ax.set_title(
+            f"Transverse Members — Unknown component '{force_key}'",
+            fontsize=12, fontweight="bold",
+        )
+        ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
+        return fig, {}
+
+    if is_disp:
+        disp_comp_name = DISP_MAP[force_key]
+        disp_label = DISP_DISPLAY.get(force_key, force_key)
+        try:
+            comp_names_d = [str(c) for c in ds["displacements"].coords["Component"].values]
+            dc_idx = next(
+                (i for i, c in enumerate(comp_names_d) if c.lower() == disp_comp_name.lower()),
+                None,
+            )
+        except Exception:
+            dc_idx = None
+
+        if dc_idx is None:
+            ax.set_title(
+                f"Transverse Members — {disp_label} (component not found)",
+                fontsize=12, fontweight="bold",
+            )
+            ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
+            return fig, {}
+
+        try:
+            disp_arr = ds["displacements"].values
+            node_ids_d = [int(n) for n in ds["displacements"].coords["Node"].values]
+            disp_by_node = {nid: row for nid, row in zip(node_ids_d, disp_arr)}
+        except Exception:
+            disp_by_node = {}
+
+        trans_color = "#1565C0"
+
+        for tag, (n1, n2) in trans_tags.items():
+            x1, y1, z1 = nodes[n1]
+            x2, y2, z2 = nodes[n2]
+            ax.plot([x1, x2], [z1, z2], [0, 0], color="#888888", lw=1.0, alpha=0.5)
+            for nid, nx, nz in [(n1, x1, z1), (n2, x2, z2)]:
+                row = disp_by_node.get(nid)
+                if row is None:
+                    continue
+                try:
+                    val = float(row[dc_idx]) * 1000.0   # m → mm
+                    all_vals.append(val)
+                    if abs(val) > 1e-15 and v_scale > 0:
+                        ax.plot([nx, nx], [nz, nz], [0, val * v_scale],
+                                color=trans_color, lw=2.0)
+                        ax.scatter([nx], [nz], [val * v_scale],
+                                   color=trans_color, s=20, zorder=5, depthshade=False)
+                except Exception:
+                    pass
+
+    else:
+        comp_i_name, comp_j_name = FORCE_MAP[force_key]
+        force_label = FORCE_DISPLAY.get(force_key, force_key)
+        try:
+            comp_names_f = [str(c) for c in ds["forces"].coords["Component"].values]
+            ci_idx = next(
+                (i for i, c in enumerate(comp_names_f) if c.lower() == comp_i_name.lower()),
+                None,
+            )
+            cj_idx = next(
+                (i for i, c in enumerate(comp_names_f) if c.lower() == comp_j_name.lower()),
+                None,
+            )
+        except Exception:
+            ci_idx = cj_idx = None
+
+        if ci_idx is None or cj_idx is None:
+            lbl = FORCE_DISPLAY.get(force_key, force_key)
+            ax.set_title(
+                f"Transverse Members — {lbl} (component not found in dataset)",
+                fontsize=12, fontweight="bold",
+            )
+            ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
+            return fig, {}
+
+        try:
+            forces_arr = ds["forces"].values        # shape (n_elems, n_comps)
+            elem_ids_f = [int(e) for e in ds["forces"].coords["Element"].values]
+            forces_by_elem = {eid: row for eid, row in zip(elem_ids_f, forces_arr)}
+        except Exception:
+            forces_by_elem = {}
+
+        trans_color = "#E65100"
+        force_label = FORCE_DISPLAY.get(force_key, force_key)
+
+        for tag, (n1, n2) in trans_tags.items():
+            x1, y1, z1 = nodes[n1]
+            x2, y2, z2 = nodes[n2]
+            ax.plot([x1, x2], [z1, z2], [0, 0], color="#888888", lw=1.0, alpha=0.5)
+            row = forces_by_elem.get(tag)
+            if row is None:
+                continue
+            try:
+                vi = float(row[ci_idx]) / 1000.0    # N → kN
+                vj = float(row[cj_idx]) / 1000.0
+                all_vals.extend([vi, vj])
+                if v_scale > 0:
+                    # i-node
+                    if abs(vi) > 1e-15:
+                        ax.plot([x1, x1], [z1, z1], [0, vi * v_scale],
+                                color=trans_color, lw=2.0)
+                        ax.scatter([x1], [z1], [vi * v_scale],
+                                   color=trans_color, s=20, zorder=5, depthshade=False)
+                    # j-node
+                    if abs(vj) > 1e-15:
+                        ax.plot([x2, x2], [z2, z2], [0, vj * v_scale],
+                                color=trans_color, lw=2.0)
+                        ax.scatter([x2], [z2], [vj * v_scale],
+                                   color=trans_color, s=20, zorder=5, depthshade=False)
+            except Exception:
+                pass
+
+        disp_label = force_label   # reuse for title
+
+    # -----------------------------------------------------------------
+    # 4. Summary, axes, title
+    # -----------------------------------------------------------------
+    if all_vals:
+        summary_data["Transverse"] = {"max": max(all_vals), "min": min(all_vals)}
+
+    ax.set_title(
+        f"Transverse Members — {disp_label if is_disp else force_label}",
+        fontsize=12, fontweight="bold", pad=12,
+    )
+    ax.set_xlabel("Span (m)", fontsize=10, labelpad=8)
+    ax.set_ylabel("Width (m)", fontsize=10, labelpad=8)
+    ax.set_zlabel(
+        f"{'Displacement (mm)' if is_disp else 'Force (kN)'}",
+        fontsize=10, labelpad=8,
+    )
+    if v_scale > 0:
+        _set_value_axis_tick_formatter(ax, v_scale)
+    ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
+    ax.xaxis.pane.fill = False
+    ax.yaxis.pane.fill = False
+    ax.zaxis.pane.fill = False
+    ax.grid(True, linestyle="--", linewidth=0.4, alpha=0.5)
+
+    return fig, summary_data

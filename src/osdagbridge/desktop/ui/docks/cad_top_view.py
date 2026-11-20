@@ -5,7 +5,7 @@ Author: Arushi
 """
 from osdagbridge.core.utils.common import *
 import math
-from PySide6.QtWidgets import QWidget, QPushButton, QScrollArea
+from PySide6.QtWidgets import QWidget, QPushButton, QScrollArea, QLineEdit
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QSize
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QPolygonF, QIcon
 from .cad_cross_section import CrossSectionCADWidget
@@ -39,6 +39,10 @@ class TopViewCADWidget(QWidget):
         self.top_view_hover_zones = []  # list of (QRectF, element_type)
         self.hovered_top_view_element = None
         
+        # Interactive dimension editing (Task I)
+        self._editable_dim_rects = {}
+        self._dim_editor = None
+
         # Zoom level for this widget
         self.zoom_level = 1.0
         
@@ -480,6 +484,7 @@ class TopViewCADWidget(QWidget):
     def paintEvent(self, event):
         # clear hover zones at start of each paint
         self.top_view_hover_zones = []
+        self._editable_dim_rects = {}
         
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
@@ -1301,6 +1306,16 @@ class TopViewCADWidget(QWidget):
             painter, x1_span, dim_y2, x2_span, dim_y2,
             label_span, last_girder_y
         )
+        if self.show_span_values:
+            font = QFont('Arial', 9, QFont.Normal)
+            painter.setFont(font)
+            metrics = painter.fontMetrics()
+            text_width = metrics.boundingRect(label_span).width()
+            text_x = (x1_span + x2_span) / 2 - text_width / 2
+            text_y = dim_y2 - 6
+            self._register_editable_dim_rect(
+                'span_length', text_x, text_y, text_width, metrics.height()
+            )
 
         # GIRDER SPACING dimension (always visible)
         if n > 1:
@@ -1607,3 +1622,156 @@ class TopViewCADWidget(QWidget):
         data = bytes(buf.data())
         buf.close()
         return data
+
+    # =========================================================================
+    # INTERACTIVE DIMENSION EDITING (Task I)
+    # =========================================================================
+
+    _EDITABLE_DIM_MAP = {
+        'span_length': (KEY_SPAN, 1000.0, 'm'),
+    }
+
+    def mouseDoubleClickEvent(self, event):
+        """Intercept double-clicks to allow in-place editing of dimension labels."""
+        if not self.show_span_values:
+            super().mouseDoubleClickEvent(event)
+            return
+
+        # Dismiss any existing editor first
+        if self._dim_editor is not None:
+            self._dim_editor.deleteLater()
+            self._dim_editor = None
+
+        try:
+            pos = event.position().toPoint()
+        except AttributeError:
+            pos = event.pos()
+
+        for param_key, rect in self._editable_dim_rects.items():
+            if rect.contains(pos.x(), pos.y()):
+                self._show_dim_editor(param_key, rect)
+                return
+
+        super().mouseDoubleClickEvent(event)
+
+    def _show_dim_editor(self, param_key, rect):
+        """Create a floating QLineEdit overlay for editing a dimension label in place."""
+        info = self._EDITABLE_DIM_MAP.get(param_key)
+        if info is None:
+            return
+
+        input_key, divisor, unit = info
+        current_mm = self.params.get(param_key, 0.0)
+        current_val = current_mm / divisor
+
+        editor = QLineEdit(self)
+        editor.setObjectName("_dim_inline_editor_top")
+        editor.setText(f"{current_val:.4g}")
+        editor.selectAll()
+
+        ex = max(0, int(rect.x()))
+        ey = max(0, int(rect.y()))
+        ew = max(80, int(rect.width()))
+        eh = max(20, int(rect.height()))
+        editor.setGeometry(ex, ey, ew, eh)
+        editor.setStyleSheet(
+            "QLineEdit { background: #FFFFF0; border: 2px solid #90AF13; "
+            "font-size: 9pt; padding: 1px; }"
+        )
+
+        self._dim_editor = editor
+        self._dim_editor_param = param_key
+
+        def _on_commit():
+            self._commit_dim_edit(param_key, editor, input_key, divisor, unit)
+
+        editor.returnPressed.connect(_on_commit)
+        editor.editingFinished.connect(_on_commit)
+
+        editor.show()
+        editor.setFocus()
+
+    def _commit_dim_edit(self, param_key, editor, input_key, divisor, unit):
+        """Validate and commit an edited dimension value."""
+        if self._dim_editor is None:
+            return
+
+        import math as _math
+
+        self._dim_editor = None
+
+        raw = editor.text().strip()
+        editor.deleteLater()
+
+        if not raw:
+            self._show_dim_error(f"Value for {param_key.replace('_', ' ').title()} cannot be empty.")
+            return
+
+        try:
+            new_val = float(raw)
+        except ValueError:
+            self._show_dim_error(
+                f"Invalid number '{raw}' for {param_key.replace('_', ' ').title()}.\n"
+                "Please enter a valid positive number."
+            )
+            return
+
+        if not _math.isfinite(new_val):
+            self._show_dim_error("Value must be a finite number.")
+            return
+
+        if new_val <= 0:
+            self._show_dim_error(
+                f"Value for {param_key.replace('_', ' ').title()} must be greater than zero."
+            )
+            return
+
+        new_mm = new_val * divisor
+        self.params[param_key] = new_mm
+
+        parent, dict_attr = self._find_input_dict_holder()
+        if parent is not None:
+            d = getattr(parent, dict_attr)
+            d[input_key] = new_val
+            if hasattr(parent, '_update_additional_input_cad'):
+                parent._update_additional_input_cad()
+            elif hasattr(parent, 'cad_comp_widget'):
+                parent.cad_comp_widget.update_from_osdag_inputs(d)
+        else:
+            self.update_params({})
+
+    def _show_dim_error(self, message):
+        """Display an error using the existing OsdagBridge error dialog."""
+        from osdagbridge.desktop.ui.dialogs.custom_messagebox import (
+            CustomMessageBox, MessageBoxType
+        )
+        CustomMessageBox(
+            title="Input Error",
+            text=message,
+            buttons=["OK"],
+            dialogType=MessageBoxType.Warning,
+        ).exec()
+
+    def _find_input_dict_holder(self):
+        """Walk the parent chain to find an object holding input_dict or working_input_dict."""
+        p = self.parent()
+        while p is not None:
+            if hasattr(p, 'working_input_dict'):
+                return p, 'working_input_dict'
+            if hasattr(p, 'input_dict'):
+                return p, 'input_dict'
+            p = p.parent()
+        return None, None
+
+    def _register_editable_dim_rect(self, param_key, text_x, text_y, text_width, text_height):
+        """Store the bounding rect of an editable dimension label text."""
+        if param_key not in self._EDITABLE_DIM_MAP:
+            return
+        padding = 4
+        rect = QRectF(
+            text_x - padding,
+            text_y - text_height - padding,
+            text_width + 2 * padding,
+            text_height + 2 * padding,
+        )
+        self._editable_dim_rects[param_key] = rect

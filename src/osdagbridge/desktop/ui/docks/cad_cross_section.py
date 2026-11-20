@@ -5,7 +5,7 @@ Author: Arushi
 """
 
 import math
-from PySide6.QtWidgets import QWidget, QPushButton, QScrollArea
+from PySide6.QtWidgets import QWidget, QPushButton, QScrollArea, QLineEdit
 from PySide6.QtCore import Qt, QRectF, QPointF, QTimer, QSize
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QBrush, QPolygonF, QIcon, QPixmap
 from osdagbridge.core.utils.common import *
@@ -51,6 +51,12 @@ class CrossSectionCADWidget(QWidget):
         self.cross_section_hover_zones = []  # Store hover zones as (QRectF, element_type)
         self.interactive_hover = True
         self.highlighted_girder_index = -1
+
+        # Interactive dimension editing
+        # Maps param_key -> QRectF of the drawn label (populated each paintEvent)
+        self._editable_dim_rects = {}
+        # Floating QLineEdit overlay for in-place editing (None when not active)
+        self._dim_editor = None
 
         # Scale factor for diagram size (1.0 = normal, <1.0 = smaller)
         self.scale_factor = 1.0
@@ -729,6 +735,7 @@ class CrossSectionCADWidget(QWidget):
         # clear hover labels and zones at start of each paint
         self.hover_labels = []
         self.cross_section_hover_zones = []
+        self._editable_dim_rects = {}
         
         painter = QPainter(self)
         try:
@@ -2154,6 +2161,17 @@ class CrossSectionCADWidget(QWidget):
                                     label_cw, True, 
                                     extension_direction='down',
                                     extension_end_y=deck_top_y)
+            # Register editable rect for carriageway width label
+            if self.show_carriageway_values:
+                _cw_font = QFont('Arial', 9, QFont.Normal)
+                painter.setFont(_cw_font)
+                _cw_met = painter.fontMetrics()
+                _cw_tw = _cw_met.boundingRect(label_cw).width()
+                _cw_tx = (actual_cw_start + actual_cw_end) / 2 - _cw_tw / 2
+                _cw_ty = Y_TOP_COMMON + 18
+                self._register_editable_dim_rect(
+                    'carriageway_width', _cw_tx, _cw_ty, _cw_tw, _cw_met.height()
+                )
         
         # Right footpath dimension
         if right_railing_present and right_fp_width > 0:
@@ -2209,6 +2227,17 @@ class CrossSectionCADWidget(QWidget):
                                     label_gs, True, 
                                     extension_direction='up',
                                     extension_end_y=base_y)
+            # Register editable rect for girder spacing label
+            if self.show_carriageway_values:
+                _gs_font = QFont('Arial', 9, QFont.Normal)
+                painter.setFont(_gs_font)
+                _gs_met = painter.fontMetrics()
+                _gs_tw = _gs_met.boundingRect(label_gs).width()
+                _gs_tx = (x_left + x_right) / 2 - _gs_tw / 2
+                _gs_ty = Y_GIRDER_SPACING - 6
+                self._register_editable_dim_rect(
+                    'girder_spacing', _gs_tx, _gs_ty, _gs_tw, _gs_met.height()
+                )
         
         # FOOTPATH THICKNESS DIMENSION 
         fp_t_mm = self.params['footpath_thickness']
@@ -2287,6 +2316,11 @@ class CrossSectionCADWidget(QWidget):
             
             self.draw_text_with_background(painter, text_x, text_y, text,
                                         QColor(255, 255, 255, 255), QColor(0, 0, 0), 9, False)
+            # Register editable rect for deck thickness label
+            if self.show_carriageway_values:
+                self._register_editable_dim_rect(
+                    'deck_thickness', text_x, text_y, text_width, metrics.height()
+                )
     def add_cross_section_hover_labels(self, painter, carriageway_start_x, carriageway_end_x,
                     left_barrier_x, right_barrier_x, deck_top_y, deck_bottom_y,
                     deck_thick_px, positions, base_y, scale, n, fp_config,
@@ -2938,3 +2972,179 @@ class CrossSectionCADWidget(QWidget):
         if self.median_type == "Custom":
             return "IRC 5 - Raised Kerb"
         return self.median_type
+
+    # =========================================================================
+    # INTERACTIVE DIMENSION EDITING  (Task I)
+    # =========================================================================
+
+    # Maps CAD param_key -> (input_dict_key, mm_divisor, display_unit)
+    # mm_divisor: factor to divide mm value by to get the input_dict value
+    _EDITABLE_DIM_MAP = {
+        'carriageway_width': (KEY_CARRIAGEWAY_WIDTH, 1000.0, 'm'),
+        'girder_spacing':    (KEY_TS_GIRDER_SPACING, 1000.0, 'm'),
+        'deck_thickness':    (KEY_TS_DECK_THICKNESS, 1.0,    'mm'),
+        'span_length':       (KEY_SPAN,             1000.0, 'm'),
+    }
+
+    def mouseDoubleClickEvent(self, event):
+        """Intercept double-clicks to allow in-place editing of dimension labels."""
+        if not self.show_carriageway_values:
+            super().mouseDoubleClickEvent(event)
+            return
+
+        # Dismiss any existing editor first
+        if self._dim_editor is not None:
+            self._dim_editor.deleteLater()
+            self._dim_editor = None
+
+        try:
+            pos = event.position().toPoint()
+        except AttributeError:
+            pos = event.pos()
+
+        for param_key, rect in self._editable_dim_rects.items():
+            if rect.contains(pos.x(), pos.y()):
+                self._show_dim_editor(param_key, rect)
+                return
+
+        super().mouseDoubleClickEvent(event)
+
+    def _show_dim_editor(self, param_key, rect):
+        """Create a floating QLineEdit overlay for editing a dimension label in place."""
+        info = self._EDITABLE_DIM_MAP.get(param_key)
+        if info is None:
+            return
+
+        input_key, divisor, unit = info
+        current_mm = self.params.get(param_key, 0.0)
+        current_val = current_mm / divisor  # convert mm to display unit
+
+        editor = QLineEdit(self)
+        editor.setObjectName("_dim_inline_editor")
+        editor.setText(f"{current_val:.4g}")
+        editor.selectAll()
+
+        # Position over the label rect (clamped to widget bounds)
+        ex = max(0, int(rect.x()))
+        ey = max(0, int(rect.y()))
+        ew = max(80, int(rect.width()))
+        eh = max(20, int(rect.height()))
+        editor.setGeometry(ex, ey, ew, eh)
+        editor.setStyleSheet(
+            "QLineEdit { background: #FFFFF0; border: 2px solid #90AF13; "
+            "font-size: 9pt; padding: 1px; }"
+        )
+
+        self._dim_editor = editor
+        self._dim_editor_param = param_key
+
+        # Use a closure to capture context
+        def _on_commit():
+            self._commit_dim_edit(param_key, editor, input_key, divisor, unit)
+
+        editor.returnPressed.connect(_on_commit)
+        editor.editingFinished.connect(_on_commit)
+
+        editor.show()
+        editor.setFocus()
+
+    def _commit_dim_edit(self, param_key, editor, input_key, divisor, unit):
+        """Validate and commit an edited dimension value."""
+        # Guard against double-commit (editingFinished fires after returnPressed)
+        if self._dim_editor is None:
+            return
+
+        import math as _math
+
+        self._dim_editor = None  # mark as consumed before any early return
+
+        raw = editor.text().strip()
+        editor.deleteLater()
+
+        # --- Validation ---
+        if not raw:
+            self._show_dim_error(f"Value for {param_key.replace('_', ' ').title()} cannot be empty.")
+            return
+
+        try:
+            new_val = float(raw)
+        except ValueError:
+            self._show_dim_error(
+                f"Invalid number '{raw}' for {param_key.replace('_', ' ').title()}.\n"
+                "Please enter a valid positive number."
+            )
+            return
+
+        if not _math.isfinite(new_val):
+            self._show_dim_error(f"Value must be a finite number.")
+            return
+
+        if new_val <= 0:
+            self._show_dim_error(
+                f"Value for {param_key.replace('_', ' ').title()} must be greater than zero."
+            )
+            return
+
+        # --- Update CAD internal params (mm) ---
+        new_mm = new_val * divisor
+        self.params[param_key] = new_mm
+
+        # --- Propagate to parent AdditionalInputs working_input_dict ---
+        parent = self._find_additional_inputs_parent()
+        if parent is not None:
+            parent.working_input_dict[input_key] = new_val
+            parent._update_additional_input_cad()
+        else:
+            # Standalone: just redraw
+            self.update_params({})
+
+    def _show_dim_error(self, message):
+        """Display an error using the existing OsdagBridge error dialog."""
+        from osdagbridge.desktop.ui.dialogs.custom_messagebox import (
+            CustomMessageBox, MessageBoxType
+        )
+        CustomMessageBox(
+            title="Input Error",
+            text=message,
+            buttons=["OK"],
+            dialogType=MessageBoxType.Warning,
+        ).exec()
+
+    def _find_additional_inputs_parent(self):
+        """Walk the parent chain to locate the AdditionalInputs dialog."""
+        try:
+            from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import (
+                AdditionalInputs
+            )
+        except ImportError:
+            return None
+
+        p = self.parent()
+        while p is not None:
+            if isinstance(p, AdditionalInputs):
+                return p
+            p = p.parent()
+        return None
+
+    def _register_editable_dim_rect(self, param_key, text_x, text_y, text_width, text_height):
+        """Store the bounding rect of an editable dimension label text.
+
+        Called from add_professional_cross_section_dimensions after each
+        draw_text_with_background call for an editable label.
+
+        Args:
+            param_key:   key in self._EDITABLE_DIM_MAP (and self.params)
+            text_x/y:    top-left of the drawn text background (same args as draw_text_with_background)
+            text_width:  pixel width of the label
+            text_height: pixel height of the label
+        """
+        if param_key not in self._EDITABLE_DIM_MAP:
+            return
+        padding = 4
+        rect = QRectF(
+            text_x - padding,
+            text_y - text_height - padding,
+            text_width + 2 * padding,
+            text_height + 2 * padding,
+        )
+        self._editable_dim_rects[param_key] = rect

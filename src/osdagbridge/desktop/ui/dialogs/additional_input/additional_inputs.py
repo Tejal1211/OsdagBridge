@@ -51,6 +51,12 @@ class AdditionalInputs(QDialog):
         # Last confirmed-good spacing and girder count; restored if solver raises an error
         self._last_good_layout: dict = {}
 
+        # ── Unsaved-changes tracking (Task II) ──────────────────────────────
+        self.is_modified = False
+        # Guard flag: True while set_defaults() / population is running so that
+        # programmatic widget changes don't mark the dialog as modified.
+        self._populating = False
+
         # TO tract additional input is opened first time or not.
         # This is required for end connectors
         self.interacted_first = True
@@ -252,6 +258,14 @@ class AdditionalInputs(QDialog):
         Called at init time (from set_input_dictionary) when working_input_dict
         is a fresh copy of the defaults. NOT used by the Defaults button.
         """
+        self._populating = True
+        try:
+            self._set_defaults_impl()
+        finally:
+            self._populating = False
+
+    def _set_defaults_impl(self) -> None:
+        """Internal implementation of set_defaults, called inside _populating guard."""
         for widget in self.findChildren(QWidget):
             name = widget.objectName()
             if not name or name not in self.working_input_dict:
@@ -516,12 +530,26 @@ class AdditionalInputs(QDialog):
         if combo and combo.currentText().strip():
             self._save_stiffener_member_data(combo.currentText().strip())
 
+        # ── Pre-save validation: check all Custom fields are non-empty ───────
+        custom_errors = self._validate_custom_fields()
+        if custom_errors:
+            CustomMessageBox(
+                title="Validation Error",
+                text=custom_errors[0],
+                buttons=["OK"],
+                dialogType=MessageBoxType.Warning,
+            ).exec()
+            return
+
         self.default_input_dict.update(self.working_input_dict)
         from osdagbridge.desktop.ui.docks.cad_cross_section import CrossSectionCADWidget
         cad = self.findChild(CrossSectionCADWidget, KEY_TS_CAD_PREVIEW)
         if cad:
             self.update_template_page_2d_cad.emit(cad.params)
         
+        # Reset unsaved-changes flag after a successful save
+        self.is_modified = False
+
         CustomMessageBox(
             title="Saved",
             text="Inputs saved successfully.",
@@ -538,6 +566,87 @@ class AdditionalInputs(QDialog):
             dialogType=MessageBoxType.Warning,
         ).exec()
 
+    # ── Unsaved-changes tracking (Task II) ──────────────────────────────────
+
+    def _mark_modified(self):
+        """Mark the dialog as having unsaved changes (skipped during population)."""
+        if not self._populating:
+            self.is_modified = True
+
+    def closeEvent(self, event):
+        """Warn the user if there are unsaved changes before closing."""
+        if self.is_modified:
+            result = CustomMessageBox(
+                title="Unsaved Changes",
+                text=(
+                    "You have unsaved changes. Closing this window will discard them. "
+                    "Do you want to proceed?"
+                ),
+                buttons=["Discard", "Cancel"],
+                dialogType=MessageBoxType.Warning,
+            ).exec()
+            if result == "Discard":
+                self.is_modified = False
+                event.accept()
+            else:
+                event.ignore()
+        else:
+            event.accept()
+
+    def _validate_custom_fields(self) -> list:
+        """Return a list of error strings for any Custom field that is empty.
+
+        Iterates every AdaptiveWidget in the dialog, checks if its controller
+        is set to 'Custom', and verifies the active QLineEdit is non-empty.
+        """
+        errors = []
+        key_label_map = self._build_key_label_map()
+
+        for adaptive in self.findChildren(AdaptiveWidget):
+            ctrl_id = getattr(adaptive, '_controller_id', None)
+            field_id = getattr(adaptive, '_field_id', None)
+            if not ctrl_id or not field_id:
+                continue
+
+            mode = str(self.working_input_dict.get(ctrl_id) or '')
+            if mode.strip().lower() != 'custom':
+                continue
+
+            # Check the active widget inside the AdaptiveWidget stack
+            active = adaptive.currentWidget()
+            # Accept real QLineEdit or any duck-typed widget with a text() method
+            if isinstance(active, QLineEdit) or (callable(getattr(active, 'text', None))):
+                text = active.text().strip()
+                if not text:
+                    label = key_label_map.get(field_id, field_id)
+                    errors.append(
+                        f"Error: The custom value for '{label}' cannot be empty."
+                    )
+
+        return errors
+
+    def _build_key_label_map(self) -> dict:
+        """Build a {field_key: human_readable_label} map from ADDITIONAL_INPUTS_SCHEMA."""
+        result = {}
+
+        def _extract(node):
+            if isinstance(node, dict):
+                key = node.get('key') or node.get('id')
+                label = node.get('label', '')
+                if key and label:
+                    result[key] = label
+                for child_key in ('sections', 'fields', 'rows', 'controls', 'items'):
+                    for child in node.get(child_key, []):
+                        _extract(child)
+            elif isinstance(node, list):
+                for item in node:
+                    _extract(item)
+
+        for tab_def in ADDITIONAL_INPUTS_SCHEMA:
+            _extract(tab_def.get('schema', tab_def))
+
+        return result
+
     # ── Field Change Handling ────────────────────────────────────────────────────
 
     def _on_field_edited(self, key: str, widget: QLineEdit | str | dict):  # on_change: hard-validates and commits a field value after editing finishes
@@ -546,6 +655,7 @@ class AdditionalInputs(QDialog):
         - QComboBox: always valid, skip validation, update dict + CAD.
         - QLineEdit: hard validation — corrects widget + input_dict if invalid, shows popup.
         """
+        self._mark_modified()
         if isinstance(widget, str):
             self._update_input_dict(key, widget)
             self._update_additional_input_cad()
@@ -584,6 +694,7 @@ class AdditionalInputs(QDialog):
         self._update_additional_input_cad()
 
     def _on_field_editing(self, current_text: str, key: str):  # on_change: soft validation while typing — updates dict/CAD only when valid, no popups
+        self._mark_modified()
         if not current_text.strip():
             self._update_input_dict(key, "")
             self._update_additional_input_cad()
