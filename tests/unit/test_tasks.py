@@ -406,6 +406,210 @@ class TestAdditionalInputsValidation:
         errors = AdditionalInputs._validate_custom_fields(d)
         assert errors == []
 
+    # ── Camber & Generic Custom Field Validation Regression Tests ─────────
+
+    def test_camber_custom_empty_blocks_validation(self):
+        """Camber set to Custom with empty value must return error and block save."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Custom",
+            KEY_DO_CAMBER_VALUE: "",
+        }
+        d.findChildren = lambda *a, **kw: []
+        errors = AdditionalInputs._validate_custom_fields(d)
+        assert len(errors) == 1
+        assert errors[0] == "Error: The custom value for 'Camber' cannot be empty."
+
+    def test_camber_custom_whitespace_blocks_validation(self):
+        """Camber set to Custom with whitespace-only value must return error."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Custom",
+            KEY_DO_CAMBER_VALUE: "   \t\n  ",
+        }
+        d.findChildren = lambda *a, **kw: []
+        errors = AdditionalInputs._validate_custom_fields(d)
+        assert len(errors) == 1
+        assert errors[0] == "Error: The custom value for 'Camber' cannot be empty."
+
+    def test_camber_custom_valid_value_passes(self):
+        """Camber set to Custom with valid numeric string (including 0) passes validation."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Custom",
+            KEY_DO_CAMBER_VALUE: "0",
+        }
+        d.findChildren = lambda *a, **kw: []
+        assert AdditionalInputs._validate_custom_fields(d) == []
+
+        d.working_input_dict[KEY_DO_CAMBER_VALUE] = "1.5"
+        assert AdditionalInputs._validate_custom_fields(d) == []
+
+    def test_another_custom_field_empty_blocks_validation(self):
+        """Another applicable custom field (e.g. Footpath Pressure) set to Custom with empty value is blocked."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_LL_FOOTPATH_PRESSURE
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {
+            f"{KEY_LL_FOOTPATH_PRESSURE}.mode": "Custom",
+            f"{KEY_LL_FOOTPATH_PRESSURE}.value": "",
+        }
+        d.findChildren = lambda *a, **kw: []
+        errors = AdditionalInputs._validate_custom_fields(d)
+        assert len(errors) == 1
+        assert "Footpath Pressure" in errors[0]
+        assert "cannot be empty" in errors[0]
+
+    def test_non_custom_mode_preserved(self):
+        """Non-custom modes (Default, Automatic, As per IRC 6) must not be validated or blocked."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE, KEY_LL_FOOTPATH_PRESSURE
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Default",
+            KEY_DO_CAMBER_VALUE: "",
+            f"{KEY_LL_FOOTPATH_PRESSURE}.mode": "As per IRC 6",
+            f"{KEY_LL_FOOTPATH_PRESSURE}.value": "",
+        }
+        d.findChildren = lambda *a, **kw: []
+        errors = AdditionalInputs._validate_custom_fields(d)
+        assert errors == []
+
+    def test_failed_validation_does_not_persist_or_reset_modified(self):
+        """When validation fails in _save_inputs, working_input_dict must NOT update default_input_dict, and is_modified must remain True."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE
+        from unittest.mock import patch
+
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.is_modified = True
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Custom",
+            KEY_DO_CAMBER_VALUE: "",
+            "modified_key": "new_uncommitted_value",
+        }
+        d.default_input_dict = {
+            "modified_key": "original_default_value",
+        }
+        d.findChildren = lambda *a, **kw: []
+        d.findChild = lambda *a, **kw: None
+        d._save_stiffener_member_data = lambda *a, **kw: None
+
+        with patch("osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs.CustomMessageBox") as mock_box:
+            mock_box.return_value.exec = lambda: "OK"
+            d._save_inputs()
+
+        assert d.default_input_dict["modified_key"] == "original_default_value"
+        assert d.is_modified is True
+
+    def test_successful_save_resets_is_modified_and_persists(self):
+        """When validation succeeds in _save_inputs, changes must be persisted and is_modified reset to False."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER_MODE, KEY_DO_CAMBER_VALUE
+        from unittest.mock import patch
+
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.is_modified = True
+        d.working_input_dict = {
+            KEY_DO_CAMBER_MODE: "Custom",
+            KEY_DO_CAMBER_VALUE: "2.0",
+            "modified_key": "new_committed_value",
+        }
+        d.default_input_dict = {
+            "modified_key": "original_default_value",
+        }
+        d.findChildren = lambda *a, **kw: []
+        d.findChild = lambda *a, **kw: None
+        d.update_template_page_2d_cad = type("Signal", (), {"emit": lambda *a: None})()
+        d._save_stiffener_member_data = lambda *a, **kw: None
+
+        with patch("osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs.CustomMessageBox") as mock_box:
+            mock_box.return_value.exec = lambda: "OK"
+            d._save_inputs()
+
+        assert d.default_input_dict["modified_key"] == "new_committed_value"
+        assert d.is_modified is False
+
+    def test_close_event_discard_and_cancel_behavior(self):
+        """closeEvent must warn on unsaved changes; Discard accepts and resets modified, Cancel ignores."""
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from unittest.mock import patch, MagicMock
+
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.is_modified = True
+
+        event_cancel = MagicMock()
+        with patch("osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs.CustomMessageBox") as mock_box:
+            mock_box.return_value.exec = lambda: "Cancel"
+            d.closeEvent(event_cancel)
+            event_cancel.ignore.assert_called_once()
+            assert d.is_modified is True
+
+        event_discard = MagicMock()
+        with patch("osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs.CustomMessageBox") as mock_box:
+            mock_box.return_value.exec = lambda: "Discard"
+            d.closeEvent(event_discard)
+            event_discard.accept.assert_called_once()
+            assert d.is_modified is False
+
+        event_clean = MagicMock()
+        with patch("osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs.CustomMessageBox") as mock_box:
+            d.closeEvent(event_clean)
+            mock_box.assert_not_called()
+            event_clean.accept.assert_called_once()
+
+    def test_camber_live_widget_validation(self):
+        """Test with live PySide6 widgets that Camber Custom mode empty/whitespace is rejected and valid value is accepted."""
+        from PySide6.QtWidgets import QComboBox, QLineEdit
+        from osdagbridge.desktop.ui.dialogs.additional_input.additional_inputs import AdditionalInputs
+        from osdagbridge.core.utils.common import KEY_DO_CAMBER
+
+        d = AdditionalInputs.__new__(AdditionalInputs)
+        d.working_input_dict = {}
+
+        mode_combo = QComboBox()
+        mode_combo.setObjectName(f"{KEY_DO_CAMBER}.mode")
+        mode_combo.addItems(["Default", "Custom"])
+
+        val_input = QLineEdit()
+        val_input.setObjectName(f"{KEY_DO_CAMBER}.value")
+
+        d.findChildren = lambda cls, *a, **kw: [mode_combo] if cls is QComboBox else ([val_input] if cls is QLineEdit else [])
+        d.findChild = lambda cls, name, *a, **kw: val_input if name == f"{KEY_DO_CAMBER}.value" else None
+
+        # Mode Default -> passes
+        mode_combo.setCurrentText("Default")
+        val_input.setText("")
+        assert d._validate_custom_fields() == []
+
+        # Mode Custom + empty text -> blocked
+        mode_combo.setCurrentText("Custom")
+        val_input.setText("")
+        errors = d._validate_custom_fields()
+        assert len(errors) == 1
+        assert errors[0] == "Error: The custom value for 'Camber' cannot be empty."
+
+        # Mode Custom + whitespace text -> blocked
+        val_input.setText("     ")
+        errors = d._validate_custom_fields()
+        assert len(errors) == 1
+        assert errors[0] == "Error: The custom value for 'Camber' cannot be empty."
+
+        # Mode Custom + '0' -> passes
+        val_input.setText("0")
+        assert d._validate_custom_fields() == []
+
+        # Mode Custom + valid text -> passes and syncs
+        val_input.setText("1.75")
+        assert d._validate_custom_fields() == []
+        assert d.working_input_dict.get(f"{KEY_DO_CAMBER}.value") == "1.75"
+
 
 # ===========================================================================
 # TASK III — Transverse Member Result Plotting

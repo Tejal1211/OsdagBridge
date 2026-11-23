@@ -593,35 +593,180 @@ class AdditionalInputs(QDialog):
         else:
             event.accept()
 
+    @staticmethod
+    def _clean_label(label: str) -> str:
+        """Strip HTML tags, unit annotations in parentheses, and trailing punctuation."""
+        if not label or not isinstance(label, str):
+            return ""
+        import re
+        s = re.sub(r"<[^>]+>", "", label)
+        s = re.sub(r"\s*\([^)]*\)", "", s)
+        s = s.rstrip(":.").strip()
+        return s or label
+
     def _validate_custom_fields(self) -> list:
         """Return a list of error strings for any Custom field that is empty.
 
-        Iterates every AdaptiveWidget in the dialog, checks if its controller
-        is set to 'Custom', and verifies the active QLineEdit is non-empty.
+        Validates:
+        1. AdaptiveWidget instances where controller is set to 'Custom'.
+        2. Mode + Value field pairs (e.g. TYPE_MODE_LINE) where mode is set to 'Custom'.
+        3. Any entries in working_input_dict where a parameter mode is 'Custom'.
         """
         errors = []
-        key_label_map = self._build_key_label_map()
+        validated_fields = set()
+        key_label_map = self._build_key_label_map() if hasattr(self, "_build_key_label_map") else {}
 
-        for adaptive in self.findChildren(AdaptiveWidget):
-            ctrl_id = getattr(adaptive, '_controller_id', None)
-            field_id = getattr(adaptive, '_field_id', None)
+        def _safe_find_child(cls, name):
+            if not hasattr(self, "findChild"):
+                return None
+            try:
+                return self.findChild(cls, name)
+            except Exception:
+                return None
+
+        def _safe_find_children(cls):
+            if not hasattr(self, "findChildren"):
+                return []
+            try:
+                res = self.findChildren(cls)
+                return res if res is not None else []
+            except Exception:
+                return []
+
+        def _resolve_label(fid: str) -> str:
+            raw = key_label_map.get(fid)
+            if not raw:
+                base_id = fid[:-6] if fid.endswith(".value") else (fid[:-5] if fid.endswith(".mode") else fid)
+                raw = key_label_map.get(base_id)
+            if raw:
+                return self._clean_label(raw) if hasattr(self, "_clean_label") else raw
+            clean_base = fid.split(".")[-1].replace("_", " ").title()
+            return self._clean_label(clean_base) if hasattr(self, "_clean_label") else clean_base
+
+        # ── 1. Check AdaptiveWidget instances ─────────────────────────────────
+        try:
+            from osdagbridge.desktop.ui.dialogs.additional_input.ui_builder.common_ui_builder import (
+                AdaptiveWidget,
+            )
+            adaptives = _safe_find_children(AdaptiveWidget)
+        except Exception:
+            adaptives = []
+
+        for adaptive in adaptives:
+            ctrl_id = getattr(adaptive, "_controller_id", None)
+            field_id = getattr(adaptive, "_field_id", None)
             if not ctrl_id or not field_id:
                 continue
 
-            mode = str(self.working_input_dict.get(ctrl_id) or '')
-            if mode.strip().lower() != 'custom':
+            # Determine active mode from controller widget or working_input_dict
+            mode = ""
+            try:
+                from PySide6.QtWidgets import QComboBox
+                ctrl_widget = _safe_find_child(QComboBox, ctrl_id)
+                if ctrl_widget and hasattr(ctrl_widget, "currentText"):
+                    mode = ctrl_widget.currentText()
+            except Exception:
+                pass
+            if not mode and hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+                mode = str(self.working_input_dict.get(ctrl_id) or "")
+
+            if str(mode).strip().lower() != "custom":
                 continue
 
-            # Check the active widget inside the AdaptiveWidget stack
-            active = adaptive.currentWidget()
-            # Accept real QLineEdit or any duck-typed widget with a text() method
-            if isinstance(active, QLineEdit) or (callable(getattr(active, 'text', None))):
-                text = active.text().strip()
-                if not text:
-                    label = key_label_map.get(field_id, field_id)
-                    errors.append(
-                        f"Error: The custom value for '{label}' cannot be empty."
-                    )
+            validated_fields.add(field_id)
+
+            # Check active widget inside the stack
+            active = adaptive.currentWidget() if hasattr(adaptive, "currentWidget") else None
+            text = None
+            if active is not None:
+                if callable(getattr(active, "text", None)):
+                    text = active.text()
+                elif callable(getattr(active, "currentText", None)):
+                    text = active.currentText()
+
+            if text is None and hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+                text = self.working_input_dict.get(field_id)
+
+            if text is None or str(text).strip() == "":
+                label = _resolve_label(field_id)
+                errors.append(f"Error: The custom value for '{label}' cannot be empty.")
+            else:
+                if hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+                    self.working_input_dict[field_id] = str(text).strip()
+
+        # ── 2. Check Mode + Value widget pairs (.mode / .value) ───────────────
+        try:
+            from PySide6.QtWidgets import QComboBox, QLineEdit, QWidget
+            combos = _safe_find_children(QComboBox)
+        except Exception:
+            combos = []
+
+        for combo in combos:
+            name = combo.objectName() if hasattr(combo, "objectName") else ""
+            if not name or not name.endswith(".mode"):
+                continue
+
+            field_id = name[:-5]
+            if field_id in validated_fields:
+                continue
+
+            mode_text = combo.currentText() if hasattr(combo, "currentText") else ""
+            if str(mode_text).strip().lower() != "custom":
+                continue
+
+            validated_fields.add(field_id)
+
+            val_name = f"{field_id}.value"
+            val_widget = _safe_find_child(QWidget, val_name)
+            text = None
+            if val_widget is not None:
+                if callable(getattr(val_widget, "text", None)):
+                    text = val_widget.text()
+                elif callable(getattr(val_widget, "currentText", None)):
+                    text = val_widget.currentText()
+
+            if text is None and hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+                text = self.working_input_dict.get(val_name)
+                if text is None:
+                    text = self.working_input_dict.get(field_id)
+
+            if text is None or str(text).strip() == "":
+                label = _resolve_label(field_id)
+                errors.append(f"Error: The custom value for '{label}' cannot be empty.")
+            else:
+                if hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+                    self.working_input_dict[val_name] = str(text).strip()
+
+        # ── 3. Check working_input_dict entries ending in .mode ────────────────
+        if hasattr(self, "working_input_dict") and isinstance(self.working_input_dict, dict):
+            for k, v in list(self.working_input_dict.items()):
+                if isinstance(k, str) and k.endswith(".mode"):
+                    if str(v).strip().lower() != "custom":
+                        continue
+                    field_id = k[:-5]
+                    if field_id in validated_fields:
+                        continue
+                    validated_fields.add(field_id)
+
+                    val_name = f"{field_id}.value"
+                    val_widget = _safe_find_child(QWidget, val_name)
+                    text = None
+                    if val_widget is not None:
+                        if callable(getattr(val_widget, "text", None)):
+                            text = val_widget.text()
+                        elif callable(getattr(val_widget, "currentText", None)):
+                            text = val_widget.currentText()
+
+                    if text is None:
+                        text = self.working_input_dict.get(val_name)
+                        if text is None:
+                            text = self.working_input_dict.get(field_id)
+
+                    if text is None or str(text).strip() == "":
+                        label = _resolve_label(field_id)
+                        errors.append(f"Error: The custom value for '{label}' cannot be empty.")
+                    else:
+                        self.working_input_dict[val_name] = str(text).strip()
 
         return errors
 
@@ -631,19 +776,29 @@ class AdditionalInputs(QDialog):
 
         def _extract(node):
             if isinstance(node, dict):
-                key = node.get('key') or node.get('id')
-                label = node.get('label', '')
+                key = node.get("key") or node.get("id")
+                label = node.get("label", "")
                 if key and label:
-                    result[key] = label
-                for child_key in ('sections', 'fields', 'rows', 'controls', 'items'):
-                    for child in node.get(child_key, []):
+                    cleaned = self._clean_label(label)
+                    result[key] = cleaned
+                    result[f"{key}.value"] = cleaned
+                    result[f"{key}.mode"] = cleaned
+                bind_value = node.get("bind_value")
+                if bind_value and label:
+                    result[bind_value] = self._clean_label(label)
+                for child_key in (
+                    "sections", "fields", "rows", "controls", "items",
+                    "tabs", "schema", "columns", "checkbox_groups",
+                ):
+                    child = node.get(child_key)
+                    if child:
                         _extract(child)
             elif isinstance(node, list):
                 for item in node:
                     _extract(item)
 
         for tab_def in ADDITIONAL_INPUTS_SCHEMA:
-            _extract(tab_def.get('schema', tab_def))
+            _extract(tab_def.get("schema", tab_def))
 
         return result
 
