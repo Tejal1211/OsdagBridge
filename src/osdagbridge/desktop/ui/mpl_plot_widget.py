@@ -404,10 +404,13 @@ class MplPlotWidget(QWidget):
             except RuntimeError:
                 pass
 
-        for rb in self._output_dock.output_widget.findChildren(CustomRadioButton):
+        rbs = getattr(self._output_dock, "_analysis_force_rbs", None)
+        if not rbs and hasattr(self._output_dock, "output_widget") and self._output_dock.output_widget:
+            rbs = self._output_dock.output_widget.findChildren(CustomRadioButton)
+        for rb in (rbs or []):
             if rb.text() in _RICH_LABEL_TO_FORCE:
                 try:
-                    rb.toggled.disconnect(self.update_plot)
+                    rb.toggled.disconnect()
                 except RuntimeError:
                     pass
 
@@ -483,13 +486,15 @@ class MplPlotWidget(QWidget):
 
         # 2. Connect Force Radios
         from osdagbridge.desktop.ui.utils.custom_widgets import CustomRadioButton
-        force_rbs = [
-            rb for rb in output_dock.output_widget.findChildren(CustomRadioButton)
-            if rb.text() in _RICH_LABEL_TO_FORCE
-        ]
-        for rb in force_rbs:
+        force_rbs = getattr(output_dock, "_analysis_force_rbs", None)
+        if not force_rbs and hasattr(output_dock, "output_widget") and output_dock.output_widget:
+            force_rbs = [
+                rb for rb in output_dock.output_widget.findChildren(CustomRadioButton)
+                if rb.text() in _RICH_LABEL_TO_FORCE
+            ]
+        for rb in (force_rbs or []):
             rb.setChecked(rb.text() == _DEFAULT_FORCE_LABEL)
-            rb.toggled.connect(self.update_plot)
+            rb.toggled.connect(lambda checked: self.update_plot() if checked else None)
 
         # Create placeholders to store the checkboxes
         self._cb_max = None
@@ -1516,8 +1521,22 @@ class MplPlotWidget(QWidget):
         return combo.currentText() if combo else (self._loadcases[0] if self._loadcases else "")
 
     def _current_force_key(self) -> str:
-        from osdagbridge.desktop.ui.utils.custom_widgets import CustomRadioButton
-        for rb in self._output_dock.output_widget.findChildren(CustomRadioButton):
-            if rb.isChecked() and rb.text() in _RICH_LABEL_TO_FORCE:
-                return _RICH_LABEL_TO_FORCE[rb.text()]
+        if self._output_dock is not None:
+            bg = getattr(self._output_dock, "_analysis_force_bg", None)
+            if bg is not None:
+                btn = bg.checkedButton()
+                if btn is not None and btn.text() in _RICH_LABEL_TO_FORCE:
+                    return _RICH_LABEL_TO_FORCE[btn.text()]
+
+            rbs = getattr(self._output_dock, "_analysis_force_rbs", None)
+            if rbs:
+                for rb in rbs:
+                    if rb.isChecked() and rb.text() in _RICH_LABEL_TO_FORCE:
+                        return _RICH_LABEL_TO_FORCE[rb.text()]
+
+            from osdagbridge.desktop.ui.utils.custom_widgets import CustomRadioButton
+            if hasattr(self._output_dock, "output_widget") and self._output_dock.output_widget:
+                for rb in self._output_dock.output_widget.findChildren(CustomRadioButton):
+                    if rb.isChecked() and rb.text() in _RICH_LABEL_TO_FORCE:
+                        return _RICH_LABEL_TO_FORCE[rb.text()]
         return "Fy"

@@ -516,7 +516,7 @@ class OutputDock(QWidget):
         exclusive : bool (in meta) — when True, selecting one button unchecks all
                     others in the grid (standard radio behaviour).  Defaults True.
         """
-        from PySide6.QtWidgets import QVBoxLayout, QGridLayout, QLabel
+        from PySide6.QtWidgets import QVBoxLayout, QGridLayout, QLabel, QButtonGroup
         from PySide6.QtGui import QFont
     
         outer = QVBoxLayout()
@@ -554,6 +554,10 @@ class OutputDock(QWidget):
         if key == KEY_ANALYSIS_FORCES:
             self._analysis_force_rbs = all_rbs
             self._analysis_force_grid = grid
+            self._analysis_force_bg = QButtonGroup(self)
+            self._analysis_force_bg.setExclusive(True)
+            for i, rb in enumerate(all_rbs):
+                self._analysis_force_bg.addButton(rb, i)
             for i, item in enumerate(GIRDER_RADIO_CONFIG):
                 if i < len(all_rbs):
                     all_rbs[i].setToolTip(item[4])

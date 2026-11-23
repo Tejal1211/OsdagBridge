@@ -855,6 +855,53 @@ class TestTransversePlotting:
         assert hint.height() > 0
         assert min_hint.width() < hint.width()
 
+    def test_transverse_radio_buttons_mutually_exclusive(self):
+        """All 9 radio buttons must be strictly mutually exclusive."""
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+        dock.set_transverse_mode(True)
+
+        for i in range(len(dock._analysis_force_rbs)):
+            dock._analysis_force_rbs[i].click()
+            checked = [rb.isChecked() for rb in dock._analysis_force_rbs]
+            assert checked.count(True) == 1
+            assert checked[i] is True
+
+    def test_transverse_button_group_registered(self):
+        """OutputDock registers a QButtonGroup for force radio buttons."""
+        from PySide6.QtWidgets import QButtonGroup
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+        assert hasattr(dock, "_analysis_force_bg")
+        assert isinstance(dock._analysis_force_bg, QButtonGroup)
+        assert len(dock._analysis_force_bg.buttons()) == 9
+
+    def test_transverse_radio_click_updates_plot_widget_force_key(self):
+        """Clicking each transverse radio button immediately updates MplPlotWidget._current_force_key."""
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock
+        from osdagbridge.desktop.ui.mpl_plot_widget import MplPlotWidget
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+        dock.refresh_member_dropdown()
+
+        widget = MplPlotWidget()
+        widget.link_output_dock(dock)
+
+        dock.set_transverse_mode(True)
+        expected_keys = ["Fx", "Fy", "Fz", "Mx", "My", "Mz", "Dx", "Dy", "Dz"]
+
+        for i, expected_key in enumerate(expected_keys):
+            dock._analysis_force_rbs[i].click()
+            assert widget._current_force_key() == expected_key
+
     # ── Figure-generating tests (skipped under headless; run interactively) ─
 
     @_HEADLESS_3D
@@ -863,8 +910,8 @@ class TestTransversePlotting:
         members = {1: (1, 2), 2: (3, 4), 3: (1, 3), 4: (2, 4)}
         ds = _make_xr_dataset(list(members.keys()), list(nodes.keys()))
         from osdagbridge.core.bridge_types.plate_girder.plot_generator import build_figure_transverse
-        fig, summary = build_figure_transverse(ds, "Fy", nodes, members)
-        assert isinstance(result, tuple) and fig is not None and isinstance(summary, dict)
+        result = build_figure_transverse(ds, "Fy", nodes, members)
+        assert isinstance(result, tuple) and result[0] is not None and isinstance(result[1], dict)
 
     @_HEADLESS_3D
     def test_no_transverse_members_graceful(self):

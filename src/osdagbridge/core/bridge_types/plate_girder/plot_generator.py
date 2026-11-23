@@ -9,7 +9,7 @@ from matplotlib.ticker import FuncFormatter
 from matplotlib.ticker import MaxNLocator
 import numpy as np
 import openseespy.opensees as ops
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
+from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 from mpl_toolkits.mplot3d import proj3d
 from matplotlib.text import Annotation
 try:
@@ -1697,8 +1697,7 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
     # -----------------------------------------------------------------
     # 1. Classify members: transverse = lateral (Z) difference > span (X) diff
     # -----------------------------------------------------------------
-    _z_tol = 1e-3
-
+    trans_member_list = []
     trans_tags = {}   # tag -> (n1, n2)
     for tag, (n1, n2) in members.items():
         if n1 not in nodes or n2 not in nodes:
@@ -1708,7 +1707,13 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
         dx = abs(x1 - x2)
         dz = abs(z1 - z2)
         if dz > dx:          # lateral span dominates → transverse
-            trans_tags[int(tag)] = (n1, n2)
+            trans_member_list.append((tag, n1, n2))
+            trans_tags[tag] = (n1, n2)
+            try:
+                trans_tags[int(tag)] = (n1, n2)
+            except Exception:
+                pass
+            trans_tags[str(tag)] = (n1, n2)
 
     # -----------------------------------------------------------------
     # 2. Create figure with 3-D axes
@@ -1733,7 +1738,7 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
         include_end_transverse=True,
     )
 
-    if not trans_tags:
+    if not trans_member_list:
         ax.set_title(
             "Transverse Members — No transverse elements found",
             fontsize=12, fontweight="bold",
@@ -1764,9 +1769,10 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
         disp_comp_name = DISP_MAP[force_key]
         disp_label = DISP_DISPLAY.get(force_key, force_key)
         try:
-            comp_names_d = [str(c) for c in ds["displacements"].coords["Component"].values]
+            comp_names_d = [str(c).strip().lower() for c in ds["displacements"].coords["Component"].values]
+            target_candidates = {disp_comp_name.lower(), disp_comp_name.lower().replace("d", "")}
             dc_idx = next(
-                (i for i, c in enumerate(comp_names_d) if c.lower() == disp_comp_name.lower()),
+                (i for i, c in enumerate(comp_names_d) if c in target_candidates),
                 None,
             )
         except Exception:
@@ -1782,43 +1788,65 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
 
         try:
             disp_arr = ds["displacements"].values
-            node_ids_d = [int(n) for n in ds["displacements"].coords["Node"].values]
-            disp_by_node = {nid: row for nid, row in zip(node_ids_d, disp_arr)}
+            node_ids_d = ds["displacements"].coords["Node"].values
+            disp_by_node = {}
+            for nid, row in zip(node_ids_d, disp_arr):
+                disp_by_node[nid] = row
+                disp_by_node[str(nid)] = row
+                try:
+                    disp_by_node[int(nid)] = row
+                except Exception:
+                    pass
         except Exception:
             disp_by_node = {}
 
         trans_color = "#1565C0"
+        fill_color  = "#90CAF9"
 
-        for tag, (n1, n2) in trans_tags.items():
+        for tag, n1, n2 in trans_member_list:
             x1, y1, z1 = nodes[n1]
             x2, y2, z2 = nodes[n2]
-            ax.plot([x1, x2], [z1, z2], [0, 0], color="#888888", lw=1.0, alpha=0.5)
-            for nid, nx, nz in [(n1, x1, z1), (n2, x2, z2)]:
-                row = disp_by_node.get(nid)
-                if row is None:
-                    continue
-                try:
-                    val = float(row[dc_idx]) * 1000.0   # m → mm
-                    all_vals.append(val)
-                    if abs(val) > 1e-15 and v_scale > 0:
-                        ax.plot([nx, nx], [nz, nz], [0, val * v_scale],
-                                color=trans_color, lw=2.0)
-                        ax.scatter([nx], [nz], [val * v_scale],
-                                   color=trans_color, s=20, zorder=5, depthshade=False)
-                except Exception:
-                    pass
+            ax.plot([x1, x2], [z1, z2], [0, 0], color="#9E9E9E", lw=1.2, ls="--", alpha=0.6, zorder=2)
+            row1 = disp_by_node.get(n1)
+            row2 = disp_by_node.get(n2)
+            if row1 is None and row2 is None:
+                continue
+            v1 = float(row1[dc_idx]) * 1000.0 if row1 is not None else 0.0
+            v2 = float(row2[dc_idx]) * 1000.0 if row2 is not None else 0.0
+            all_vals.extend([v1, v2])
+
+            z1_val = v1 * v_scale
+            z2_val = v2 * v_scale
+
+            # Response line along transverse member
+            ax.plot([x1, x2], [z1, z2], [z1_val, z2_val], color=trans_color, lw=2.2, zorder=5)
+
+            # Drop lines to baseline
+            if abs(v1) > 1e-15 and v_scale > 0:
+                ax.plot([x1, x1], [z1, z1], [0, z1_val], color=trans_color, lw=1.5, alpha=0.8, zorder=4)
+            if abs(v2) > 1e-15 and v_scale > 0:
+                ax.plot([x2, x2], [z2, z2], [0, z2_val], color=trans_color, lw=1.5, alpha=0.8, zorder=4)
+
+            # Poly3DCollection curtain between baseline and response
+            if v_scale > 0 and (abs(v1) > 1e-12 or abs(v2) > 1e-12):
+                verts = [[(x1, z1, 0.0), (x1, z1, z1_val), (x2, z2, z2_val), (x2, z2, 0.0)]]
+                poly = Poly3DCollection(verts, facecolors=fill_color, alpha=0.25, edgecolors='none', zorder=3)
+                ax.add_collection3d(poly)
+
+            # Scatter points at nodes
+            ax.scatter([x1, x2], [z1, z2], [z1_val, z2_val], color=trans_color, s=28, zorder=6, depthshade=False)
 
     else:
         comp_i_name, comp_j_name = FORCE_MAP[force_key]
         force_label = FORCE_DISPLAY.get(force_key, force_key)
         try:
-            comp_names_f = [str(c) for c in ds["forces"].coords["Component"].values]
+            comp_names_f = [str(c).strip().lower() for c in ds["forces"].coords["Component"].values]
             ci_idx = next(
-                (i for i, c in enumerate(comp_names_f) if c.lower() == comp_i_name.lower()),
+                (i for i, c in enumerate(comp_names_f) if c == comp_i_name.lower()),
                 None,
             )
             cj_idx = next(
-                (i for i, c in enumerate(comp_names_f) if c.lower() == comp_j_name.lower()),
+                (i for i, c in enumerate(comp_names_f) if c == comp_j_name.lower()),
                 None,
             )
         except Exception:
@@ -1835,38 +1863,60 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
 
         try:
             forces_arr = ds["forces"].values        # shape (n_elems, n_comps)
-            elem_ids_f = [int(e) for e in ds["forces"].coords["Element"].values]
-            forces_by_elem = {eid: row for eid, row in zip(elem_ids_f, forces_arr)}
+            elem_ids_f = ds["forces"].coords["Element"].values
+            forces_by_elem = {}
+            for eid, row in zip(elem_ids_f, forces_arr):
+                forces_by_elem[eid] = row
+                forces_by_elem[str(eid)] = row
+                try:
+                    forces_by_elem[int(eid)] = row
+                except Exception:
+                    pass
         except Exception:
             forces_by_elem = {}
 
-        trans_color = "#E65100"
+        is_moment = force_key.startswith("M")
+        if is_moment:
+            trans_color = "#E65100"  # Orange/amber for moments
+            fill_color  = "#FFCCBC"
+        else:
+            trans_color = "#1565C0"  # Blue for shear/axial forces
+            fill_color  = "#90CAF9"
+
         force_label = FORCE_DISPLAY.get(force_key, force_key)
 
-        for tag, (n1, n2) in trans_tags.items():
+        for tag, n1, n2 in trans_member_list:
             x1, y1, z1 = nodes[n1]
             x2, y2, z2 = nodes[n2]
-            ax.plot([x1, x2], [z1, z2], [0, 0], color="#888888", lw=1.0, alpha=0.5)
+            ax.plot([x1, x2], [z1, z2], [0, 0], color="#9E9E9E", lw=1.2, ls="--", alpha=0.6, zorder=2)
             row = forces_by_elem.get(tag)
             if row is None:
                 continue
             try:
-                vi = float(row[ci_idx]) / 1000.0    # N → kN
+                vi = float(row[ci_idx]) / 1000.0    # N → kN or N·m → kN·m
                 vj = float(row[cj_idx]) / 1000.0
                 all_vals.extend([vi, vj])
-                if v_scale > 0:
-                    # i-node
-                    if abs(vi) > 1e-15:
-                        ax.plot([x1, x1], [z1, z1], [0, vi * v_scale],
-                                color=trans_color, lw=2.0)
-                        ax.scatter([x1], [z1], [vi * v_scale],
-                                   color=trans_color, s=20, zorder=5, depthshade=False)
-                    # j-node
-                    if abs(vj) > 1e-15:
-                        ax.plot([x2, x2], [z2, z2], [0, vj * v_scale],
-                                color=trans_color, lw=2.0)
-                        ax.scatter([x2], [z2], [vj * v_scale],
-                                   color=trans_color, s=20, zorder=5, depthshade=False)
+
+                zi_val = vi * v_scale
+                zj_val = vj * v_scale
+
+                # Response line along transverse member
+                ax.plot([x1, x2], [z1, z2], [zi_val, zj_val], color=trans_color, lw=2.2, zorder=5)
+
+                # Drop lines to baseline
+                if abs(vi) > 1e-15 and v_scale > 0:
+                    ax.plot([x1, x1], [z1, z1], [0, zi_val], color=trans_color, lw=1.5, alpha=0.8, zorder=4)
+                if abs(vj) > 1e-15 and v_scale > 0:
+                    ax.plot([x2, x2], [z2, z2], [0, zj_val], color=trans_color, lw=1.5, alpha=0.8, zorder=4)
+
+                # Poly3DCollection curtain between baseline and response
+                if v_scale > 0 and (abs(vi) > 1e-12 or abs(vj) > 1e-12):
+                    verts = [[(x1, z1, 0.0), (x1, z1, zi_val), (x2, z2, zj_val), (x2, z2, 0.0)]]
+                    poly = Poly3DCollection(verts, facecolors=fill_color, alpha=0.25, edgecolors='none', zorder=3)
+                    ax.add_collection3d(poly)
+
+                # Scatter points at nodes
+                ax.scatter([x1, x2], [z1, z2], [zi_val, zj_val], color=trans_color, s=28, zorder=6, depthshade=False)
             except Exception:
                 pass
 
@@ -1878,16 +1928,28 @@ def build_figure_transverse(ds, force_key, nodes, members, edge_dist=0.0, eng_sc
     if all_vals:
         summary_data["Transverse"] = {"max": max(all_vals), "min": min(all_vals)}
 
+        # Set Z-axis limits so 3D perspective accurately frames the diagram
+        if v_scale > 0:
+            vals_geom = [v * v_scale for v in all_vals]
+            vmin_geom = min(min(vals_geom), 0.0)
+            vmax_geom = max(max(vals_geom), 0.0)
+            span_geom = max(vmax_geom - vmin_geom, 1e-4)
+            pad = span_geom * 0.15
+            ax.set_zlim(vmin_geom - pad, vmax_geom + pad)
+
     ax.set_title(
         f"Transverse Members — {disp_label if is_disp else force_label}",
         fontsize=12, fontweight="bold", pad=12,
     )
     ax.set_xlabel("Span (m)", fontsize=10, labelpad=8)
     ax.set_ylabel("Width (m)", fontsize=10, labelpad=8)
-    ax.set_zlabel(
-        f"{'Displacement (mm)' if is_disp else 'Force (kN)'}",
-        fontsize=10, labelpad=8,
-    )
+    if is_disp:
+        z_unit_lbl = "Displacement (mm)"
+    elif force_key.startswith("M"):
+        z_unit_lbl = "Moment (kN·m)"
+    else:
+        z_unit_lbl = "Force (kN)"
+    ax.set_zlabel(z_unit_lbl, fontsize=10, labelpad=8)
     if v_scale > 0:
         _set_value_axis_tick_formatter(ax, v_scale)
     ax.view_init(elev=DEFAULT_ELEV, azim=DEFAULT_AZIM)
