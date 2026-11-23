@@ -33,8 +33,9 @@ from osdagbridge.core.bridge_types.plate_girder.plot_generator import (
 _SFD_KEYS  = {k for k in FORCE_MAP if k.startswith("F")}
 _DEFL_KEYS = set(DISP_MAP.keys())   # "Dx", "Dy", "Dz"
 
-# Map from the HTML labels used in OutputDock's radio grid -> plot keys
+# Map from the HTML and transverse labels used in OutputDock's radio grid -> plot keys
 _RICH_LABEL_TO_FORCE = {
+    # Longitudinal girder HTML labels
     "F<sub>x</sub>": "Fx",
     "V<sub>y</sub>": "Fy",
     "V<sub>z</sub>": "Fz",
@@ -44,6 +45,32 @@ _RICH_LABEL_TO_FORCE = {
     "D<sub>x</sub>": "Dx",
     "D<sub>y</sub>": "Dy",
     "D<sub>z</sub>": "Dz",
+    # Transverse labels with units
+    "Fx (kN)": "Fx",
+    "Fy (kN)": "Fy",
+    "Fz (kN)": "Fz",
+    "Mx (kN·m)": "Mx",
+    "My (kN·m)": "My",
+    "Mz (kN·m)": "Mz",
+    "Mx (kNm)": "Mx",
+    "My (kNm)": "My",
+    "Mz (kNm)": "Mz",
+    "Mx (kN-m)": "Mx",
+    "My (kN-m)": "My",
+    "Mz (kN-m)": "Mz",
+    "Dx (mm)": "Dx",
+    "Dy (mm)": "Dy",
+    "Dz (mm)": "Dz",
+    # Plain component keys
+    "Fx": "Fx",
+    "Fy": "Fy",
+    "Fz": "Fz",
+    "Mx": "Mx",
+    "My": "My",
+    "Mz": "Mz",
+    "Dx": "Dx",
+    "Dy": "Dy",
+    "Dz": "Dz",
 }
 
 _DEFAULT_FORCE_LABEL = "V<sub>y</sub>"   # pre-checked on first link

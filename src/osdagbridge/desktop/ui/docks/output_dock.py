@@ -38,6 +38,7 @@ from osdagbridge.core.utils.common import (
     KEY_UTIL_FLEXURE, KEY_UTIL_SHEAR, KEY_UTIL_INTERACTION, KEY_UTIL_LTB,
     KEY_UTIL_LONG_TRANS_SHEAR, KEY_UTIL_FATIGUE, KEY_UTIL_STRESS_LIMITATION,
     KEY_UTIL_DEFLECTION_CRACK, KEY_ANALYSIS_LOAD_COMBINATION,
+    KEY_ANALYSIS_MEMBER, KEY_ANALYSIS_FORCES,
     KEY_OUTPUT_DOCK_MEMBER_ID, KEY_OUTPUT_DOCK_LOAD_COMBINATION,
     KEY_TS_NO_OF_GIRDERS,
 )
@@ -69,6 +70,33 @@ ACTION_BTN_STYLE = (
 )
 LABEL_STYLE       = "QLabel { color:#000; font-size:12px; background:transparent; }"
 SMALL_LABEL_STYLE = "QLabel { color:#333; font-size:10px; font-weight:normal; background:transparent; }"
+
+# ── Force configurations for analysis radio grid (3x3 layout) ─────────────────
+TRANSVERSE_RADIO_CONFIG = [
+    # (row, col, key, label, tooltip)
+    (0, 0, "Fx", "Fx (kN)", "Fx: Axial force along X-axis (kN)"),
+    (0, 1, "Fy", "Fy (kN)", "Fy: Transverse shear force along Y-axis (kN)"),
+    (0, 2, "Fz", "Fz (kN)", "Fz: Vertical shear force along Z-axis (kN)"),
+    (1, 0, "Mx", "Mx (kN·m)", "Mx: Torsional moment about X-axis (kN·m)"),
+    (1, 1, "My", "My (kN·m)", "My: Minor-axis bending moment about Y-axis (kN·m)"),
+    (1, 2, "Mz", "Mz (kN·m)", "Mz: Major-axis bending moment about Z-axis (kN·m)"),
+    (2, 0, "Dx", "Dx (mm)", "Dx: Transverse displacement along X-axis (mm)"),
+    (2, 1, "Dy", "Dy (mm)", "Dy: Vertical deflection along Y-axis (mm)"),
+    (2, 2, "Dz", "Dz (mm)", "Dz: Longitudinal displacement along Z-axis (mm)"),
+]
+
+GIRDER_RADIO_CONFIG = [
+    # (row, col, key, label, tooltip)
+    (0, 0, "Fx", "F<sub>x</sub>", "Fx: Axial force (kN)"),
+    (0, 1, "Mx", "T<sub>x</sub>", "Tx: Torsional moment (kN·m)"),
+    (0, 2, "Dx", "D<sub>x</sub>", "Dx: Longitudinal displacement (mm)"),
+    (1, 0, "Fy", "V<sub>y</sub>", "Vy: Vertical shear force (kN)"),
+    (1, 1, "My", "M<sub>y</sub>", "My: Minor-axis bending moment (kN·m)"),
+    (1, 2, "Dy", "D<sub>y</sub>", "Dy: Vertical deflection (mm)"),
+    (2, 0, "Fz", "V<sub>z</sub>", "Vz: Transverse shear force (kN)"),
+    (2, 1, "Mz", "M<sub>z</sub>", "Mz: Major-axis bending moment (kN·m)"),
+    (2, 2, "Dz", "D<sub>z</sub>", "Dz: Transverse displacement (mm)"),
+]
 
 
 class NoScrollComboBox(QComboBox):
@@ -428,6 +456,8 @@ class OutputDock(QWidget):
         if default and str(default) in items:
             combo.setCurrentText(str(default))
         apply_field_style(combo)
+        if key == KEY_ANALYSIS_MEMBER:
+            combo.currentTextChanged.connect(self._on_analysis_member_changed)
         row.addWidget(combo, 1)
         return row
 
@@ -487,6 +517,7 @@ class OutputDock(QWidget):
                     others in the grid (standard radio behaviour).  Defaults True.
         """
         from PySide6.QtWidgets import QVBoxLayout, QGridLayout, QLabel
+        from PySide6.QtGui import QFont
     
         outer = QVBoxLayout()
         outer.setContentsMargins(0, 0, 0, 0)
@@ -503,20 +534,30 @@ class OutputDock(QWidget):
     
         grid = QGridLayout()
         grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(8)
+        grid.setHorizontalSpacing(6)
         grid.setVerticalSpacing(4)
     
         for c in range(num_cols):
             grid.setColumnStretch(c, 1)
     
+        btn_font = QFont("Segoe UI", 9)
         num_rows = max((len(col) for col in columns), default=0)
         for row in range(num_rows):
             for col, col_items in enumerate(columns):
                 if row < len(col_items):
                     rb = CustomRadioButton(str(col_items[row]))
+                    rb.setFont(btn_font)
+                    rb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                     all_rbs.append(rb)
-                    grid.addWidget(rb, row, col, alignment=Qt.AlignCenter)
+                    grid.addWidget(rb, row, col, alignment=Qt.AlignLeft | Qt.AlignVCenter)
     
+        if key == KEY_ANALYSIS_FORCES:
+            self._analysis_force_rbs = all_rbs
+            self._analysis_force_grid = grid
+            for i, item in enumerate(GIRDER_RADIO_CONFIG):
+                if i < len(all_rbs):
+                    all_rbs[i].setToolTip(item[4])
+
         outer.addLayout(grid)    
         return outer
 
@@ -868,6 +909,61 @@ class OutputDock(QWidget):
             combo_analysis.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo_analysis.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             combo_analysis.blockSignals(False)
+            self._on_analysis_member_changed(combo_analysis.currentText())
+
+    def _on_analysis_member_changed(self, text: str):
+        """Handle change in Analysis Member dropdown (switching between Girder and Transverse mode)."""
+        is_transverse = (str(text).strip() == "Transverse Members")
+        self.set_transverse_mode(is_transverse)
+
+    def set_transverse_mode(self, is_transverse: bool):
+        """
+        Update analysis radio buttons between Girder and Transverse member modes.
+        When is_transverse is True:
+            Shows 3x3 grid with Fx, Fy, Fz (kN), Mx, My, Mz (kN·m), Dx, Dy, Dz (mm) and tooltips.
+        When is_transverse is False:
+            Restores longitudinal girder labels (Fx, Vy, Vz, Tx, My, Mz, Dx, Dy, Dz) and tooltips.
+        """
+        rbs = getattr(self, "_analysis_force_rbs", None)
+        if not rbs or len(rbs) < 9:
+            return
+
+        from osdagbridge.desktop.ui.mpl_plot_widget import _RICH_LABEL_TO_FORCE
+
+        # Find currently active force key
+        active_key = None
+        for rb in rbs:
+            if rb.isChecked():
+                active_key = _RICH_LABEL_TO_FORCE.get(rb.text(), None)
+                break
+
+        cfg = TRANSVERSE_RADIO_CONFIG if is_transverse else GIRDER_RADIO_CONFIG
+
+        target_idx = None
+        for i, (row, col, key, label, tooltip) in enumerate(cfg):
+            if i < len(rbs):
+                rb = rbs[i]
+                rb.setText(label)
+                rb.setToolTip(tooltip)
+                if active_key and key == active_key:
+                    target_idx = i
+
+        if target_idx is None:
+            # Default to Fy (shear)
+            for i, (row, col, key, label, tooltip) in enumerate(cfg):
+                if key == "Fy":
+                    target_idx = i
+                    break
+
+        if target_idx is not None and target_idx < len(rbs):
+            for i, rb in enumerate(rbs):
+                rb.blockSignals(True)
+                rb.setChecked(i == target_idx)
+                rb.blockSignals(False)
+
+        if hasattr(self, "output_widget") and self.output_widget:
+            self.output_widget.updateGeometry()
+            self.output_widget.update()
    
     def connect_design_dropdowns(self):
         """Connect Member and Load Case dropdowns to refresh DCR bars on change."""

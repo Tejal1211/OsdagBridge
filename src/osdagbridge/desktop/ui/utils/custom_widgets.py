@@ -365,6 +365,7 @@ class CustomRadioButton(QRadioButton):
  
     def _doc(self) -> QTextDocument:
         doc = QTextDocument()
+        doc.setDocumentMargin(0)
         doc.setDefaultFont(self.font())
         doc.setHtml(self._rich_text)
         return doc
@@ -424,7 +425,7 @@ class CustomRadioButton(QRadioButton):
             text_rect = QRect(text_x, 0, self.width() - text_x, self.height())
             painter.setPen(QColor("#1a1a1a") if self.isEnabled() else QColor("#9e9e9e"))
             painter.setFont(self.font())
-            painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, self._rich_text)
+            painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft | Qt.TextSingleLine, self._rich_text)
  
         painter.end()
  
@@ -451,7 +452,7 @@ class CustomRadioButton(QRadioButton):
         return QSize(total_width, total_height)
  
     def minimumSizeHint(self) -> QSize:
-        return self.sizeHint()
+        return QSize(self.INDICATOR_SIZE + self.PEN_WIDTH + self.SPACING + 10, self.sizeHint().height())
  
 #---Custom toolbar widget with scroll area (for main screen)--------------------------------------
 class ToolBarWidget(QWidget):

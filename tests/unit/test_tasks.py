@@ -712,6 +712,149 @@ class TestTransversePlotting:
         assert hasattr(pg, "build_figure_transverse")
         assert callable(pg.build_figure_transverse)
 
+    # ── Task 3 Radio Button Labels & Selection Tests ───────────────────────
+
+    def test_rich_label_to_force_transverse_mappings(self):
+        """Verify _RICH_LABEL_TO_FORCE maps all 9 transverse components to their keys."""
+        from osdagbridge.desktop.ui.mpl_plot_widget import _RICH_LABEL_TO_FORCE
+        expected_mappings = {
+            "Fx (kN)": "Fx",
+            "Fy (kN)": "Fy",
+            "Fz (kN)": "Fz",
+            "Mx (kN·m)": "Mx",
+            "My (kN·m)": "My",
+            "Mz (kN·m)": "Mz",
+            "Dx (mm)": "Dx",
+            "Dy (mm)": "Dy",
+            "Dz (mm)": "Dz",
+        }
+        for label, key in expected_mappings.items():
+            assert label in _RICH_LABEL_TO_FORCE, f"Missing transverse label: {label}"
+            assert _RICH_LABEL_TO_FORCE[label] == key
+
+        # Also confirm longitudinal labels are preserved
+        assert _RICH_LABEL_TO_FORCE["F<sub>x</sub>"] == "Fx"
+        assert _RICH_LABEL_TO_FORCE["V<sub>y</sub>"] == "Fy"
+        assert _RICH_LABEL_TO_FORCE["M<sub>z</sub>"] == "Mz"
+        assert _RICH_LABEL_TO_FORCE["D<sub>y</sub>"] == "Dy"
+
+    def test_transverse_radio_config_has_all_9_components(self):
+        """TRANSVERSE_RADIO_CONFIG must define 9 buttons in a 3x3 layout."""
+        from osdagbridge.desktop.ui.docks.output_dock import TRANSVERSE_RADIO_CONFIG
+        assert len(TRANSVERSE_RADIO_CONFIG) == 9
+        labels = [item[3] for item in TRANSVERSE_RADIO_CONFIG]
+        expected_labels = [
+            "Fx (kN)", "Fy (kN)", "Fz (kN)",
+            "Mx (kN·m)", "My (kN·m)", "Mz (kN·m)",
+            "Dx (mm)", "Dy (mm)", "Dz (mm)",
+        ]
+        assert labels == expected_labels
+        # Verify 3x3 row, col layout
+        rows = [item[0] for item in TRANSVERSE_RADIO_CONFIG]
+        cols = [item[1] for item in TRANSVERSE_RADIO_CONFIG]
+        assert rows == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+        assert cols == [0, 1, 2, 0, 1, 2, 0, 1, 2]
+
+    def test_transverse_radio_config_tooltips(self):
+        """Every transverse radio button must have an informative tooltip."""
+        from osdagbridge.desktop.ui.docks.output_dock import TRANSVERSE_RADIO_CONFIG
+        for row, col, key, label, tooltip in TRANSVERSE_RADIO_CONFIG:
+            assert tooltip, f"Missing tooltip for {label}"
+            assert key in tooltip, f"Tooltip '{tooltip}' should mention component key {key}"
+
+    def test_output_dock_transverse_mode_switch(self):
+        """OutputDock switches radio button labels and tooltips on set_transverse_mode."""
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock, TRANSVERSE_RADIO_CONFIG, GIRDER_RADIO_CONFIG
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+        assert hasattr(dock, "_analysis_force_rbs")
+        assert len(dock._analysis_force_rbs) == 9
+
+        # Switch to Transverse mode
+        dock.set_transverse_mode(True)
+        current_labels = [rb.text() for rb in dock._analysis_force_rbs]
+        expected_trans_labels = [item[3] for item in TRANSVERSE_RADIO_CONFIG]
+        assert current_labels == expected_trans_labels
+
+        current_tooltips = [rb.toolTip() for rb in dock._analysis_force_rbs]
+        expected_trans_tooltips = [item[4] for item in TRANSVERSE_RADIO_CONFIG]
+        assert current_tooltips == expected_trans_tooltips
+
+        # Switch back to Girder (longitudinal) mode
+        dock.set_transverse_mode(False)
+        current_girder_labels = [rb.text() for rb in dock._analysis_force_rbs]
+        expected_girder_labels = [item[3] for item in GIRDER_RADIO_CONFIG]
+        assert current_girder_labels == expected_girder_labels
+
+        current_girder_tooltips = [rb.toolTip() for rb in dock._analysis_force_rbs]
+        expected_girder_tooltips = [item[4] for item in GIRDER_RADIO_CONFIG]
+        assert current_girder_tooltips == expected_girder_tooltips
+
+    def test_output_dock_member_combobox_triggers_mode_switch(self):
+        """Selecting 'Transverse Members' in member combobox switches button labels."""
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock
+        from osdagbridge.core.utils.common import KEY_ANALYSIS_MEMBER
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+        dock.refresh_member_dropdown()
+
+        combo = dock._w(KEY_ANALYSIS_MEMBER)
+        assert combo is not None
+
+        # Select Transverse Members
+        combo.setCurrentText("Transverse Members")
+        assert dock._analysis_force_rbs[0].text() == "Fx (kN)"
+        assert dock._analysis_force_rbs[1].text() == "Fy (kN)"
+        assert dock._analysis_force_rbs[2].text() == "Fz (kN)"
+        assert dock._analysis_force_rbs[3].text() == "Mx (kN·m)"
+        assert dock._analysis_force_rbs[4].text() == "My (kN·m)"
+        assert dock._analysis_force_rbs[5].text() == "Mz (kN·m)"
+        assert dock._analysis_force_rbs[6].text() == "Dx (mm)"
+        assert dock._analysis_force_rbs[7].text() == "Dy (mm)"
+        assert dock._analysis_force_rbs[8].text() == "Dz (mm)"
+
+        # Revert to All
+        combo.setCurrentText("All")
+        assert dock._analysis_force_rbs[0].text() == "F<sub>x</sub>"
+        assert dock._analysis_force_rbs[3].text() == "V<sub>y</sub>"
+
+    def test_active_key_preserved_across_mode_switch(self):
+        """Switching mode preserves the active force component selection."""
+        from osdagbridge.core.bridge_types.plate_girder.plategirderbridge import PlateGirderBridge
+        from osdagbridge.desktop.ui.docks.output_dock import OutputDock
+
+        backend = PlateGirderBridge()
+        dock = OutputDock(backend=backend)
+
+        # In girder mode, check Mz button (index 7 in GIRDER_RADIO_CONFIG)
+        dock._analysis_force_rbs[7].setChecked(True)
+        assert dock._analysis_force_rbs[7].text() == "M<sub>z</sub>"
+
+        # Switch to Transverse mode
+        dock.set_transverse_mode(True)
+        # In TRANSVERSE_RADIO_CONFIG, Mz is at index 5: "Mz (kN·m)"
+        assert dock._analysis_force_rbs[5].text() == "Mz (kN·m)"
+        assert dock._analysis_force_rbs[5].isChecked()
+
+        # Switch back to girder mode
+        dock.set_transverse_mode(False)
+        assert dock._analysis_force_rbs[7].isChecked()
+        assert dock._analysis_force_rbs[7].text() == "M<sub>z</sub>"
+
+    def test_custom_radio_button_sizing_and_resize_fit(self):
+        """CustomRadioButton has reasonable sizeHint and flexible minimumSizeHint for resizing."""
+        from osdagbridge.desktop.ui.utils.custom_widgets import CustomRadioButton
+        rb = CustomRadioButton("Mx (kN·m)")
+        hint = rb.sizeHint()
+        min_hint = rb.minimumSizeHint()
+        assert hint.width() < 160
+        assert hint.height() > 0
+        assert min_hint.width() < hint.width()
+
     # ── Figure-generating tests (skipped under headless; run interactively) ─
 
     @_HEADLESS_3D
